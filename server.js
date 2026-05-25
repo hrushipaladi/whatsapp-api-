@@ -1,8 +1,22 @@
+import "dotenv/config";
+import dns from "node:dns";
 import express from "express";
-import dotenv from "dotenv";
 import axios from "axios";
 
-dotenv.config();
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
+
+const [{ default: whatsappRoutes }, { getClient }] = await Promise.all([
+  import("./routes/whatsappRoutes.js"),
+  import("./config/db.js"),
+]);
+
+try {
+  await getClient();
+  console.log("MongoDB connected");
+} catch (error) {
+  console.error("MongoDB connection failed:", error.message);
+  process.exit(1);
+}
 
 const app = express();
 
@@ -109,6 +123,7 @@ info@hiringhood.com
 });
 
 
+app.use("/api", whatsappRoutes);
 
 // Start Server
 app.listen(3000, () => {
