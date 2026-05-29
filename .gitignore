@@ -33,3 +33,7 @@ Thumbs.db
 # Executables and Local Tools
 ngrok.exe
 ngrok
+
+# Temporary scripts
+find_aiml.js
+find_contest.js

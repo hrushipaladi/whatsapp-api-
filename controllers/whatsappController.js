@@ -43,6 +43,15 @@ function getLocationText(locations) {
     .join(", ");
 }
 
+function getBountyAmount(jobDetails) {
+  return (
+    jobDetails.jobSeekerBounty ||
+    jobDetails.bounty ||
+    jobDetails.recruiterBounty ||
+    "NA"
+  );
+}
+
 function getWorkModeText(modeOfWork, onSiteFeasibility) {
   const mode = String(modeOfWork || "").trim().toUpperCase();
 
@@ -120,6 +129,24 @@ function getButtonUrlSuffix(applyLink, buttonUrlSuffix, contestId) {
   }
 
   return String(applyLink).replace(/^https?:\/\/[^/]+\//, "");
+}
+
+function getOpenRolesUrlSuffix(openRolesLink, openRolesUrlSuffix) {
+  if (openRolesUrlSuffix) {
+    return String(openRolesUrlSuffix).replace(/^\/+/, "");
+  }
+
+  if (!openRolesLink) {
+    return "";
+  }
+
+  try {
+    const url = new URL(openRolesLink);
+
+    return `${url.pathname}${url.search}`.replace(/^\/+/, "");
+  } catch {
+    return String(openRolesLink).replace(/^\/+/, "");
+  }
 }
 
 async function findMatchScore(db, contestId, jsId) {
@@ -302,313 +329,157 @@ async function findContest(contests, contestId) {
   });
 }
 
+async function getCommonNotificationData(req, res) {
+  const { contestId, jsId, testPhoneNumber } = req.body;
+
+  if (!contestId || !jsId) {
+    return { errorResponse: res.status(400).json({ error: "Both 'contestId' and 'jsId' are required" }) };
+  }
+
+  const client = await getClient();
+  const db = client.db("Marketplace");
+  const contests = db.collection("contests");
+  const jobseekerCollection = db.collection("jobSeekerProfile");
+  const usersProfile = db.collection("userProfile");
+
+  const jobseeker = await jobseekerCollection.findOne({ _id: toObjectId(jsId) });
+  if (!jobseeker) {
+    return { errorResponse: res.status(404).json({ error: "Jobseeker not found" }) };
+  }
+
+  const jobseekerName = getJobseekerName(jobseeker);
+  const jobseekerPhone = getCleanPhone(jobseeker.personal_info?.phoneNumber, testPhoneNumber);
+
+  if (!jobseekerPhone) {
+    return { errorResponse: res.status(400).json({ error: "Jobseeker phone number is missing" }) };
+  }
+
+  const contestDetails = await findContest(contests, contestId);
+  if (!contestDetails) {
+    return { errorResponse: res.status(404).json({ error: "Contest not found" }) };
+  }
+
+  const jobDetails = contestDetails.details?.jobDetails || {};
+  const userProfile = await findEmployerProfile(usersProfile, contestDetails.userId);
+
+  return {
+    db,
+    jobseeker,
+    jobseekerName,
+    jobseekerPhone,
+    contestDetails,
+    jobDetails,
+    userProfile
+  };
+}
+
+async function sendWhatsAppPayload(whatsappPayload, logPrefix = "WhatsApp") {
+  if (!process.env.WHATSAPP_API_URL || !process.env.WHATSAPP_TOKEN) {
+    throw new Error("WhatsApp API configuration missing");
+  }
+
+  console.log(`Sending ${logPrefix} Template...`);
+  const response = await axios.post(
+    process.env.WHATSAPP_API_URL,
+    whatsappPayload,
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+  console.log(`${logPrefix} Message Sent Successfully`);
+  return response;
+}
+
 export async function sendWhatsappMessage(req, res) {
-
   try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
 
-    const { contestId, jsId, testPhoneNumber } = req.body;
-
-
-
-    // Validation
-    if (!contestId || !jsId) {
-      return res.status(400).json({
-        error: "Both 'contestId' and 'jsId' are required"
-      });
-    }
-
-
-
-    // MongoDB Connection
-    const client = await getClient();
-
-    const db = client.db("Marketplace");
-
-    const contests = db.collection("contests");
-
-    const jobseeker_collection =
-      db.collection("jobSeekerProfile");
-
-    const users_profile =
-      db.collection("userProfile");
-
-
-
-    // Fetch Jobseeker
-    const jobseeker =
-      await jobseeker_collection.findOne({
-        _id: new ObjectId(jsId)
-      });
-
-    if (!jobseeker) {
-      return res.status(404).json({
-        error: "Jobseeker not found"
-      });
-    }
-
-
-
-    // Jobseeker Details
     const {
-      firstName,
-      middleName,
-      lastName,
-      phoneNumber
-    } = jobseeker.personal_info;
+      jobseekerPhone,
+      jobseekerName,
+      jobTitle,
+      companyName,
+      contestDetails
+    } = data;
 
-    const jobseekerName =
-      [firstName, middleName, lastName]
-      .filter(Boolean)
-      .join(" ");
-
-
-
-    // Phone Cleanup
-    const rawPhone = phoneNumber;
-
-    const cleanPhone =
-      rawPhone.replace(/\D/g, "").slice(-10);
-
-    const jobseekerPhone =
-      testPhoneNumber
-        ? testPhoneNumber.replace(/\D/g, "").slice(-10)
-        : cleanPhone;
-
-
-
-    console.log("jobseekerName:", jobseekerName);
-    console.log("jobseekerPhone:", `91${jobseekerPhone}`);
-
-
-
-    // Fetch Contest Details
-    const contestDetails =
-      await findContest(contests, contestId);
-
-    if (!contestDetails) {
-      return res.status(404).json({
-        error: "Contest not found"
-      });
-    }
-
-
-
-    // Job Title
-    const jobTitle =
-      contestDetails.details.jobDetails.jobTitle;
-
-    console.log("jobTitle:", jobTitle);
-
-
-
-    // Fetch Employer Profile
-    const userid = contestDetails.userId;
-
-    const userProfile =
-      await users_profile.findOne({
-        _id: new ObjectId(userid)
-      });
-
-    if (!userProfile) {
-      return res.status(404).json({
-        error: "Employer profile not found"
-      });
-    }
-
-
-
-    // Company Name
-    const companyName =
-      userProfile.emp_profile
-      .legalNameOfTheOrganisation;
-
-    console.log("companyName:", companyName || "NA");
-
-
-
-    // Values required by the existing shortlist template.
+    const contestId = req.body.contestId;
     const profileScore = "85";
+    const taraLink = "https://hiringhood.ai/tara";
+    const templateName = process.env.WHATSAPP_TEMPLATE_NAME;
 
-    const taraLink =
-      "https://hiringhood.ai/tara";
-
-
-
-    // Env Validation
-    if (
-      !process.env.WHATSAPP_API_URL ||
-      !process.env.WHATSAPP_TOKEN ||
-      !process.env.WHATSAPP_TEMPLATE_NAME
-    ) {
-
-      return res.status(500).json({
-        error: "WhatsApp API configuration missing"
-      });
-
+    if (!templateName) {
+      return res.status(500).json({ error: "WHATSAPP_TEMPLATE_NAME configuration missing" });
     }
 
-
-
-    // WhatsApp Template Payload
     const whatsappPayload = {
-
       messaging_product: "whatsapp",
-
       to: `91${jobseekerPhone}`,
-
       type: "template",
-
       template: {
-
-        name:
-          process.env.WHATSAPP_TEMPLATE_NAME,
-
-        language: {
-          code: "en"
-        },
-
+        name: templateName,
+        language: { code: "en" },
         components: [
-
-          // Header Image
           {
             type: "header",
-
             parameters: [
               {
                 type: "image",
-
-                image: {
-                  link:
-                    "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png"
-                }
+                image: { link: "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png" }
               }
             ]
           },
-
-
-
-          // Body Variables
           {
             type: "body",
-
             parameters: [
-
-              {
-                type: "text",
-                text: jobseekerName
-              },
-
-              {
-                type: "text",
-                text: jobTitle
-              },
-
-              {
-                type: "text",
-                text: companyName
-              },
-
-              {
-                type: "text",
-                text: contestId
-              },
-
-              {
-                type: "text",
-                text: profileScore
-              },
-
-              {
-                type: "text",
-                text: taraLink
-              }
-
+              { type: "text", text: jobseekerName },
+              { type: "text", text: jobTitle },
+              { type: "text", text: companyName || "NA" },
+              { type: "text", text: contestId },
+              { type: "text", text: profileScore },
+              { type: "text", text: taraLink }
             ]
           }
-
         ]
       }
     };
 
+    const response = await sendWhatsAppPayload(whatsappPayload, "WhatsApp");
 
-
-    console.log(
-      "Sending WhatsApp Template..."
-    );
-
-
-
-    // Send WhatsApp Message
-    const response = await axios.post(
-
-      process.env.WHATSAPP_API_URL,
-
-      whatsappPayload,
-
-      {
-        headers: {
-
-          Authorization:
-            `Bearer ${process.env.WHATSAPP_TOKEN}`,
-
-          "Content-Type":
-            "application/json"
-        }
-      }
-    );
-
-
-
-    console.log(
-      "WhatsApp Message Sent Successfully ✅"
-    );
-
-
-
-    // Success Response
     return res.status(200).json({
-
       success: true,
-
-      message:
-        "WhatsApp message sent successfully",
-
+      message: "WhatsApp message sent successfully",
       data: response.data
-
     });
-
   } catch (error) {
-
-    console.error(
-      "Error in sendWhatsappMessage:"
-    );
-
-    console.error(
-      error.response?.data || error.message
-    );
-
+    console.error("Error in sendWhatsappMessage:", error.response?.data || error.message);
     return res.status(500).json({
-
       success: false,
-
-      message:
-        "Internal server error",
-
-      error:
-        error.response?.data || error.message
-
+      message: "Internal server error",
+      error: error.response?.data || error.message
     });
   }
 }
 
 export async function sendJdApprovedNotification(req, res) {
-
   try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
 
     const {
-      contestId,
-      jsId,
-      testPhoneNumber,
+      db,
+      jobseekerPhone,
+      jobseekerName,
+      jobTitle,
+      companyName,
+      jobDetails,
+      contestDetails
+    } = data;
+
+    const {
       matchScore,
       thresholdScore = "80",
       interviewDays = "7",
@@ -616,211 +487,50 @@ export async function sendJdApprovedNotification(req, res) {
       buttonUrlSuffix
     } = req.body;
 
+    const contestId = req.body.contestId;
+    const jsId = req.body.jsId;
 
+    const location = getLocationText(jobDetails.locations);
+    const workMode = getWorkModeText(jobDetails.modeOfWork, jobDetails.onSiteFeasibility);
 
-    // Validation
-    if (!contestId || !jsId) {
-      return res.status(400).json({
-        error: "Both 'contestId' and 'jsId' are required"
-      });
-    }
-
-
-
-    // MongoDB Connection
-    const client = await getClient();
-
-    const db = client.db("Marketplace");
-
-    const contests = db.collection("contests");
-
-    const jobseekerCollection =
-      db.collection("jobSeekerProfile");
-
-    const usersProfile =
-      db.collection("userProfile");
-
-    // Fetch Jobseeker
-    const jobseeker =
-      await jobseekerCollection.findOne({
-        _id: toObjectId(jsId)
-      });
-
-    if (!jobseeker) {
-      return res.status(404).json({
-        error: "Jobseeker not found"
-      });
-    }
-
-    const jobseekerName =
-      getJobseekerName(jobseeker);
-
-    const jobseekerPhone =
-      getCleanPhone(
-        jobseeker.personal_info?.phoneNumber,
-        testPhoneNumber
-      );
-
-    if (!jobseekerPhone) {
-      return res.status(400).json({
-        error: "Jobseeker phone number is missing"
-      });
-    }
-
-
-
-    // Fetch Contest Details
-    const contestDetails =
-      await findContest(contests, contestId);
-
-    if (!contestDetails) {
-      return res.status(404).json({
-        error: "Contest not found"
-      });
-    }
-
-    const jobDetails =
-      contestDetails.details?.jobDetails || {};
-
-    const jobTitle =
-      jobDetails.jobTitle || "Not specified";
-
-    const location =
-      getLocationText(jobDetails.locations);
-
-    const workMode =
-      getWorkModeText(
-        jobDetails.modeOfWork,
-        jobDetails.onSiteFeasibility
-      );
-
-
-
-    // Fetch Employer Profile
-    const userProfile =
-      await findEmployerProfile(
-        usersProfile,
-        contestDetails.userId
-      );
-
-    const companyName =
-      userProfile?.emp_profile
-        ?.legalNameOfTheOrganisation ||
-      jobDetails.otherCompanyName ||
-      jobDetails.hiringFor ||
-      "Hiringhood Partner";
-
-    const savedMatchScore =
-      matchScore ||
-      await findMatchScore(
-        db,
-        contestId,
-        jsId
-      );
-
-    const matchScoreNumber =
-      getPercentNumber(savedMatchScore);
-
-    const thresholdScoreNumber =
-      getPercentNumber(thresholdScore);
+    const savedMatchScore = matchScore || await findMatchScore(db, contestId, jsId);
+    const matchScoreNumber = getPercentNumber(savedMatchScore);
+    const thresholdScoreNumber = getPercentNumber(thresholdScore);
 
     if (!isUsableTemplateValue(companyName)) {
-      return res.status(422).json({
-        error: "Company name is missing or not valid for WhatsApp notification"
-      });
+      return res.status(422).json({ error: "Company name is missing or not valid for WhatsApp notification" });
     }
 
     if (!isUsableTemplateValue(matchScoreNumber)) {
-      return res.status(422).json({
-        error: "Match score is missing for this contest and jobseeker"
-      });
+      return res.status(422).json({ error: "Match score is missing for this contest and jobseeker" });
     }
 
-    const dynamicButtonSuffix =
-      getButtonUrlSuffix(
-        applyLink,
-        buttonUrlSuffix,
-        contestId
-      );
+    const dynamicButtonSuffix = getButtonUrlSuffix(applyLink, buttonUrlSuffix, contestId);
 
-    // Env Validation
-    if (
-      !process.env.WHATSAPP_API_URL ||
-      !process.env.WHATSAPP_TOKEN
-    ) {
-
-      return res.status(500).json({
-        error: "WhatsApp API configuration missing"
-      });
-
-    }
-
-    const templateName =
-      process.env.JD_APPROVED_TEMPLATE_NAME ||
-      process.env.WHATSAPP_TEMPLATE_NAME;
-
+    const templateName = process.env.JD_APPROVED_TEMPLATE_NAME || process.env.WHATSAPP_TEMPLATE_NAME;
     if (!templateName) {
-      return res.status(500).json({
-        error: "JD_APPROVED_TEMPLATE_NAME or WHATSAPP_TEMPLATE_NAME is required"
-      });
+      return res.status(500).json({ error: "JD_APPROVED_TEMPLATE_NAME or WHATSAPP_TEMPLATE_NAME is required" });
     }
 
-
-
-    // WhatsApp Template Payload
     const whatsappPayload = {
-
       messaging_product: "whatsapp",
-
       to: `91${jobseekerPhone}`,
-
       type: "template",
-
       template: {
-
         name: templateName,
-
-        language: {
-          code: "en"
-        },
-
+        language: { code: "en" },
         components: [
           {
             type: "body",
-
             parameters: [
-              {
-                type: "text",
-                text: jobseekerName
-              },
-              {
-                type: "text",
-                text: jobTitle
-              },
-              {
-                type: "text",
-                text: companyName
-              },
-              {
-                type: "text",
-                text: location
-              },
-              {
-                type: "text",
-                text: workMode
-              },
-              {
-                type: "text",
-                text: matchScoreNumber
-              },
-              {
-                type: "text",
-                text: thresholdScoreNumber
-              },
-              {
-                type: "text",
-                text: interviewDays
-              }
+              { type: "text", text: jobseekerName },
+              { type: "text", text: jobTitle },
+              { type: "text", text: companyName },
+              { type: "text", text: location },
+              { type: "text", text: workMode },
+              { type: "text", text: matchScoreNumber },
+              { type: "text", text: thresholdScoreNumber },
+              { type: "text", text: interviewDays }
             ]
           }
         ]
@@ -832,66 +542,272 @@ export async function sendJdApprovedNotification(req, res) {
       sub_type: "url",
       index: "0",
       parameters: [
-        {
-          type: "text",
-          text: dynamicButtonSuffix
-        }
+        { type: "text", text: dynamicButtonSuffix }
       ]
     });
 
-
-
-    console.log("Sending JD Approved WhatsApp Template...");
-
-    const response = await axios.post(
-
-      process.env.WHATSAPP_API_URL,
-
-      whatsappPayload,
-
-      {
-        headers: {
-
-          Authorization:
-            `Bearer ${process.env.WHATSAPP_TOKEN}`,
-
-          "Content-Type":
-            "application/json"
-        }
-      }
-    );
-
-    console.log("JD Approved WhatsApp Message Sent Successfully");
+    const response = await sendWhatsAppPayload(whatsappPayload, "JD Approved");
 
     return res.status(200).json({
-
       success: true,
-
-      message:
-        "JD approved WhatsApp message sent successfully",
-
+      message: "JD approved WhatsApp message sent successfully",
       data: response.data
+    });
+  } catch (error) {
+    console.error("Error in sendJdApprovedNotification:", error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.response?.data || error.message
+    });
+  }
+}
 
+export async function sendReferralNotification(req, res) {
+  try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
+
+    const {
+      jobseekerPhone,
+      jobseekerName,
+      jobTitle,
+      companyName,
+      jobDetails,
+      contestDetails
+    } = data;
+
+    const {
+      bountyAmount,
+      applyLink,
+      buttonUrlSuffix,
+      openRolesLink,
+      openRolesUrlSuffix
+    } = req.body;
+
+    const contestId = req.body.contestId;
+
+    const location = getLocationText(jobDetails.locations);
+    const referralBounty = getPercentNumber(bountyAmount || getBountyAmount(jobDetails));
+
+    if (!isUsableTemplateValue(companyName)) {
+      return res.status(422).json({ error: "Company name is missing or not valid for WhatsApp notification" });
+    }
+
+    if (!isUsableTemplateValue(referralBounty)) {
+      return res.status(422).json({ error: "Referral bounty is missing for this contest" });
+    }
+
+    const templateName = process.env.REFERRAL_TEMPLATE_NAME;
+    if (!templateName) {
+      return res.status(500).json({ error: "REFERRAL_TEMPLATE_NAME is required" });
+    }
+
+    const referButtonSuffix = getButtonUrlSuffix(applyLink, buttonUrlSuffix, contestId);
+    const rolesButtonSuffix = getOpenRolesUrlSuffix(openRolesLink, openRolesUrlSuffix);
+
+    const whatsappPayload = {
+      messaging_product: "whatsapp",
+      to: `91${jobseekerPhone}`,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          {
+            type: "header",
+            parameters: [
+              {
+                type: "image",
+                image: { link: "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png" }
+              }
+            ]
+          },
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: jobseekerName },
+              { type: "text", text: referralBounty },
+              { type: "text", text: jobTitle },
+              { type: "text", text: companyName },
+              { type: "text", text: location },
+              { type: "text", text: referralBounty }
+            ]
+          }
+        ]
+      }
+    };
+
+    whatsappPayload.template.components.push({
+      type: "button",
+      sub_type: "url",
+      index: "0",
+      parameters: [
+        { type: "text", text: referButtonSuffix }
+      ]
+    });
+
+    if (rolesButtonSuffix) {
+      whatsappPayload.template.components.push({
+        type: "button",
+        sub_type: "url",
+        index: "1",
+        parameters: [
+          { type: "text", text: rolesButtonSuffix }
+        ]
+      });
+    }
+
+    const response = await sendWhatsAppPayload(whatsappPayload, "Referral");
+
+    return res.status(200).json({
+      success: true,
+      message: "Referral WhatsApp message sent successfully",
+      data: response.data
+    });
+  } catch (error) {
+    console.error("Error in sendReferralNotification:", error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.response?.data || error.message
+    });
+  }
+}
+
+export async function sendPreferencesReminderNotification(req, res) {
+  try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
+
+    const {
+      db,
+      jobseekerPhone,
+      jobseekerName,
+      jobDetails,
+      contestDetails
+    } = data;
+
+    const contestId = req.body.contestId;
+    const jsId = req.body.jsId;
+
+    const contestName = contestDetails.name || jobDetails.jobTitle || "Not specified";
+
+    const savedMatchScore = await findMatchScore(db, contestId, jsId);
+    const currentScore = getPercentNumber(savedMatchScore);
+
+    const templateName = process.env.PREFERENCES_REMINDER_TEMPLATE_NAME || "preferences_incomplete_reminder";
+
+    const whatsappPayload = {
+      messaging_product: "whatsapp",
+      to: `91${jobseekerPhone}`,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          {
+            type: "header",
+            parameters: [
+              {
+                type: "image",
+                image: { link: "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png" }
+              }
+            ]
+          },
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: jobseekerName },
+              { type: "text", text: contestName },
+              { type: "text", text: currentScore }
+            ]
+          }
+        ]
+      }
+    };
+
+    // The preferences template URL button 
+
+    const response = await sendWhatsAppPayload(whatsappPayload, "Preferences Reminder");
+
+    return res.status(200).json({
+      success: true,
+      message: "Preferences reminder WhatsApp message sent successfully",
+      data: response.data
+    });
+  } catch (error) {
+    console.error("Error in sendPreferencesReminderNotification:", error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.response?.data || error.message
+    });
+  }
+}
+
+export async function sendProfileUpdatedNotification(req, res) {
+  try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
+
+    const {
+      jobseekerPhone,
+      jobseekerName
+    } = data;
+
+    const contestId = req.body.contestId;
+    const templateName = process.env.PROFILE_UPDATED_TEMPLATE_NAME || "profile_updated_by_admin";
+
+    const whatsappPayload = {
+      messaging_product: "whatsapp",
+      to: `91${jobseekerPhone}`,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          {
+            type: "header",
+            parameters: [
+              {
+                type: "image",
+                image: { link: "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png" }
+              }
+            ]
+          },
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: jobseekerName || "Jobseeker" }
+            ]
+          },
+          {
+            type: "button",
+            sub_type: "url",
+            index: 0,
+            parameters: [
+              { type: "text", text: String(contestId) }
+            ]
+          }
+        ]
+      }
+    };
+
+    const response = await sendWhatsAppPayload(whatsappPayload, "Profile Updated");
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated notification sent successfully",
+      data: response.data
     });
 
   } catch (error) {
-
-    console.error("Error in sendJdApprovedNotification:");
-
-    console.error(
-      error.response?.data || error.message
-    );
-
+    console.error("Error in sendProfileUpdatedNotification:", error.response?.data || error.message);
     return res.status(500).json({
-
       success: false,
-
-      message:
-        "Internal server error",
-
-      error:
-        error.response?.data || error.message
-
+      message: "Internal server error",
+      error: error.response?.data || error.message
     });
   }
 }
