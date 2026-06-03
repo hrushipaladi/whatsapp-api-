@@ -362,6 +362,9 @@ async function getCommonNotificationData(req, res) {
   const jobDetails = contestDetails.details?.jobDetails || {};
   const userProfile = await findEmployerProfile(usersProfile, contestDetails.userId);
 
+  const jobTitle = req.body.jobTitle || jobDetails?.jobTitle || "Not specified";
+  const companyName = req.body.companyName || userProfile?.companyName || userProfile?.company_name || jobDetails?.companyName || "Not specified";
+
   return {
     db,
     jobseeker,
@@ -369,7 +372,9 @@ async function getCommonNotificationData(req, res) {
     jobseekerPhone,
     contestDetails,
     jobDetails,
-    userProfile
+    userProfile,
+    jobTitle,
+    companyName
   };
 }
 
@@ -804,6 +809,128 @@ export async function sendProfileUpdatedNotification(req, res) {
 
   } catch (error) {
     console.error("Error in sendProfileUpdatedNotification:", error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.response?.data || error.message
+    });
+  }
+}
+
+export async function sendJobApplicationUpdateNotification(req, res) {
+  try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
+
+    const {
+      jobseekerPhone,
+      jobseekerName,
+      jobTitle,
+      companyName
+    } = data;
+
+    const templateName = process.env.JOB_APPLICATION_UPDATE_TEMPLATE_NAME || "job_application_update";
+
+    const whatsappPayload = {
+      messaging_product: "whatsapp",
+      to: `91${jobseekerPhone}`,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          {
+            type: "header",
+            parameters: [
+              {
+                type: "image",
+                image: { link: "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png" }
+              }
+            ]
+          },
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: jobseekerName },
+              { type: "text", text: jobTitle },
+              { type: "text", text: companyName }
+            ]
+          }
+        ]
+      }
+    };
+
+    const response = await sendWhatsAppPayload(whatsappPayload, "Job Application Update");
+
+    return res.status(200).json({
+      success: true,
+      message: "Job application update WhatsApp message sent successfully",
+      data: response.data
+    });
+
+  } catch (error) {
+    console.error("Error in sendJobApplicationUpdateNotification:", error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.response?.data || error.message
+    });
+  }
+}
+
+export async function sendInterviewRejectedNotification(req, res) {
+  try {
+    const data = await getCommonNotificationData(req, res);
+    if (data.errorResponse) return data.errorResponse;
+
+    const {
+      jobseekerPhone,
+      jobseekerName,
+      jobTitle,
+      companyName
+    } = data;
+
+    const templateName = process.env.INTERVIEW_REJECTED_TEMPLATE_NAME || "interview_rejected_by_employer";
+
+    const whatsappPayload = {
+      messaging_product: "whatsapp",
+      to: `91${jobseekerPhone}`,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          {
+            type: "header",
+            parameters: [
+              {
+                type: "image",
+                image: { link: "https://ecs-express-app.s3.amazonaws.com/images/uploaded-1777294691723.png" }
+              }
+            ]
+          },
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: jobseekerName || "Jobseeker" },
+              { type: "text", text: jobTitle || "Not specified" },
+              { type: "text", text: companyName || "Not specified" }
+            ]
+          }
+        ]
+      }
+    };
+
+    const response = await sendWhatsAppPayload(whatsappPayload, "Interview Rejected");
+
+    return res.status(200).json({
+      success: true,
+      message: "Interview rejected WhatsApp message sent successfully",
+      data: response.data
+    });
+
+  } catch (error) {
+    console.error("Error in sendInterviewRejectedNotification:", error.response?.data || error.message);
     return res.status(500).json({
       success: false,
       message: "Internal server error",
